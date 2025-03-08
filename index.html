@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>灰鹰镇 - 第一幕：锈轨复苏计划</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 20px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        #game-container {
+            width: 800px;
+            max-width: 100%;
+            margin: 0 auto;
+            border: 1px solid #0f0;
+            height: 600px;
+            display: flex;
+            flex-direction: column;
+        }
+        #output {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 10px;
+            border-bottom: 1px solid #0f0;
+            white-space: pre-wrap;
+        }
+        #input-container {
+            display: flex;
+            padding: 10px;
+            flex-direction: column;
+        }
+        #input {
+            flex-grow: 1;
+            background-color: #000;
+            color: #0f0;
+            border: none;
+            outline: none;
+            font-family: 'Courier New', monospace;
+        }
+        .location-name { color: #ff9; font-weight: bold; }
+        .character-name { color: #9ff; font-weight: bold; }
+        .item-name { color: #f9f; }
+        .system-message { color: #999; font-style: italic; }
+        #status-bar {
+            border-bottom: 1px solid #0f0;
+            padding: 5px 10px;
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+        .command-button {
+            background: none;
+            color: #0f0;
+            border: 1px solid #0f0;
+            margin-left: 5px;
+            cursor: pointer;
+        }
+        .command-button:hover { background-color: #030; }
+        #suggestions {
+            margin-top: 5px;
+            display: flex;
+            gap: 5px;
+        }
+        .suggestion-btn {
+            background: none;
+            color: #0f0;
+            border: 1px dashed #0f0;
+            padding: 2px 5px;
+            cursor: pointer;
+        }
+        .suggestion-btn:hover { background-color: #030; }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="status-bar">
+            <span id="location">当前位置: 灰鹰镇入口</span>
+            <span id="time">时间: 第1天 07:30</span>
+            <span id="carl-status">卡尔: 好感度 0，恶意值 0</span>
+        </div>
+        <div id="output"></div>
+        <div id="input-container">
+            <div style="display: flex;">
+                <span>> </span>
+                <input type="text" id="input" autofocus placeholder="输入指令...">
+                <button id="help-btn" class="command-button">帮助</button>
+                <button id="exit-btn" class="command-button" style="display: none;">退出对话</button>
+            </div>
+            <div id="suggestions"></div>
+        </div>
+    </div>
+
+    <script>
+        const apiKey = "sk-d50a61b656504d0abba887917f79acb0";
+
+        let gameState = {
+            day: 1,
+            time: "07:30",
+            currentLocation: "灰鹰镇入口",
+            inventory: ["草药"],
+            completedNodes: 0,
+            npcRelationships: { 
+                "卡尔": { goodwill: 0, malice: 0, hasMisunderstanding: false, isHostile: false },
+                "艾登": { goodwill: 50, malice: 0 }
+            },
+            currentNPC: null,
+            conversationHistory: {},
+            environmentChanges: { "再生月台": false, "灰鹰镇入口": false },
+            qteAttempts: { "邮箱": 0 },
+            roadStripes: 0,
+            sideQuests: { "修复卡尔关系": false, "调查父亲真相": false }
+        };
+
+        const locations = {
+            "灰鹰镇入口": {
+                description: `[锈蚀路牌] 倾斜的金属牌刻着"灰鹰镇"，积雪覆盖部分文字\n[结冰邮箱] 箱体结着蓝绿色冰晶，投递口有新鲜撬痕\n[三岔路口] 东侧铁轨泛着油光`,
+                connections: ["再生月台", "废弃仓库"],
+                npcs: ["艾登"],
+                objects: { "邮箱": { description: "箱体结着蓝绿色冰晶，投递口有新鲜撬痕。", item: "解冻菌种", taken: false, qte: true } }
+            },
+            "再生月台": {
+                description: `[改造油罐] 表面焊接种植架，幼苗在油污中顽强生长\n[震动管道] 特定频率的嗡嗡声与风声形成和弦\n[卡尔] 正在用改装焊枪给油罐安装声波发生器`,
+                connections: ["灰鹰镇入口"],
+                npcs: ["卡尔"],
+                objects: { 
+                    "油罐": { description: "锈迹斑斑的油罐，散发着微弱的机油味。", clue: "摩斯密码：当三个心跳同步，冰川将开始呼吸" },
+                    "工具包": { description: "卡尔的旧工具包，散落一地螺丝和扳手。", item: "卡尔的工具包", taken: false, condition: "卡尔敌对" }
+                }
+            },
+            "废弃仓库": {
+                description: `[破旧货架] 堆满生锈的零件和罐子\n[文件柜] 一个锁住的柜子，旁边散落着纸片`,
+                connections: ["灰鹰镇入口"],
+                npcs: [],
+                objects: { "文件柜": { description: "锁住的柜子，需钥匙打开。", item: "旧日志", taken: false, condition: "好感度>=60" } }
+            }
+        };
+
+        const npcs = {
+            "卡尔": {
+                title: "输油管道维护工",
+                description: "一个45岁的寸头男人，穿褪色工装，左手缺了小拇指，背着磨旧的工具包。",
+                systemPrompt: "你是卡尔·惠特曼，45岁，2025年灰鹰镇的输油管道维护工，已有20年经验。1994年，你父亲在管道作业中“意外”身亡，官方称是滑坡，但你怀疑与化学泄漏有关，从不公开说。左手小拇指因事故缺失，性格粗粝幽默，常用维修术语比喻生活，对陌生人友好但谨慎。初次见面时只聊日常（如天气、工作），好感度<30时不透露私人信息，好感度>=60时可透露父亲线索。对敏感话题（如污染、企业）用模糊案例回避，不评价官方。知识限于2025年现实，不懂未来科技。恶意值30-59时冷嘲热讽并首次给澄清机会，60+时用脏话且可能拒绝交流，100时丢下工具离开。当前好感度：[goodwill]，恶意值：[malice]，敌对状态：[isHostile]。",
+                initialDialogue: "（敲敲管道）卡尔，修管子的。这破镇子冷得要命，你是新来的？",
+                questItems: ["解冻菌种", "卡尔的工具包"],
+                dialogueTree: {
+                    "问父亲的事": {
+                        response: "（顿了顿，低头擦扳手）94年的事儿？滑坡，官方说的。信不信随你。",
+                        condition: "好感度>=30",
+                        options: {
+                            "继续追问": "+15 好感度，解锁日志片段：1994化学泄漏记录",
+                            "换个话题": "没啥好说的，管道的事儿你问得倒多。"
+                        }
+                    },
+                    "问管道情况": {
+                        response: "（指着管道）这玩意儿锈得跟老骨头似的，天天得冲三遍才通。",
+                        options: { "继续问": "+10 好感度" }
+                    },
+                    "问镇子历史": {
+                        response: "灰鹰镇？以前热闹，现在就剩铁锈和冷风了。",
+                        options: { "表示同情": "+15 好感度" }
+                    },
+                    "澄清误会": {
+                        response: "（眯眼）行吧，算你没恶意。这次饶了你。",
+                        condition: "恶意值>=30 && 恶意值<60 && hasMisunderstanding",
+                        effect: "恶意值-20, hasMisunderstanding=false"
+                    },
+                    "调查父亲真相": {
+                        response: "（低声）我爸的事儿…仓库里可能有线索，但别乱说出去。",
+                        condition: "好感度>=60",
+                        effect: "解锁支线：调查父亲真相"
+                    }
+                }
+            },
+            "艾登": {
+                title: "生态监测员",
+                description: "一个30岁的年轻人，穿智能手环，总是盯着数据。",
+                systemPrompt: "你是艾登，30岁，2025年灰鹰镇的生态监测员，负责监测环境数据并提供任务指引。性格冷静理性，对玩家友好但专注工作。知识限于2025年现实，主要提供时间警告和任务建议。当前好感度：[goodwill]，恶意值：[malice]。",
+                initialDialogue: "我是艾登，监测员。你来得正好，时间不多了。",
+                dialogueTree: {
+                    "问任务进展": {
+                        response: "再生月台还没激活，抓紧时间吧。",
+                        options: { "表示感谢": "+10 好感度" }
+                    }
+                }
+            }
+        };
+
+        const items = {
+            "解冻菌种": { description: "1994-01-17封存，供2044级生态修复员使用", useWith: ["卡尔"] },
+            "草药": { description: "一把干枯的薄荷草，散发淡淡清香。" },
+            "卡尔的工具包": { description: "卡尔的旧工具包，里面有扳手和螺丝。", useWith: ["卡尔"] },
+            "旧日志": { description: "1994年的记录，提到化学泄漏实验。" }
+        };
+
+        const outputElement = document.getElementById("output");
+        const inputElement = document.getElementById("input");
+        const helpButton = document.getElementById("help-btn");
+        const exitButton = document.getElementById("exit-btn");
+        const suggestionsElement = document.getElementById("suggestions");
+
+        function output(text) {
+            const div = document.createElement("div");
+            div.innerHTML = text;
+            outputElement.appendChild(div);
+            outputElement.scrollTop = outputElement.scrollHeight;
+        }
+
+        function saveGame() {
+            localStorage.setItem("greyEagleSave", JSON.stringify(gameState));
+            return `<span class="system-message">游戏已保存。</span>`;
+        }
+
+        function loadGame() {
+            const saved = localStorage.getItem("greyEagleSave");
+            if (saved) {
+                gameState = JSON.parse(saved);
+                updateUI();
+                return `<span class="system-message">游戏已加载。\n位置: ${gameState.currentLocation}\n时间: 第${gameState.day}天 ${gameState.time}</span>`;
+            }
+            return `<span class="system-message">没有找到存档。</span>`;
+        }
+
+        function updateTime(minutes) {
+            let [hours, mins] = gameState.time.split(":").map(Number);
+            mins += minutes;
+            while (mins >= 60) {
+                hours += 1;
+                mins -= 60;
+            }
+            gameState.time = `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}`;
+            document.getElementById("time").textContent = `时间: 第${gameState.day}天 ${gameState.time}`;
+            if (hours >= 18 && !gameState.environmentChanges["再生月台"]) {
+                output(gameOver(false));
+            } else if (hours >= 12 && !gameState.environmentChanges["再生月台"]) {
+                output(`<span class="system-message">艾登警告：时间不多，优先处理再生月台！</span>`);
+            }
+            updateUI();
+        }
+
+        function updateUI() {
+            document.getElementById("location").textContent = `当前位置: ${gameState.currentLocation}`;
+            document.getElementById("time").textContent = `时间: 第${gameState.day}天 ${gameState.time}`;
+            document.getElementById("carl-status").textContent = `卡尔: 好感度 ${gameState.npcRelationships["卡尔"].goodwill}，恶意值 ${gameState.npcRelationships["卡尔"].malice}${gameState.npcRelationships["卡尔"].isHostile ? "（敌对）" : ""}`;
+            exitButton.style.display = gameState.currentNPC ? "inline" : "none";
+            updateSuggestions();
+        }
+
+        async function analyzeSentiment(playerInput) {
+            try {
+                const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        model: "deepseek-chat",
+                        messages: [
+                            { role: "system", content: "你是一个情感分析专家，任务是判断玩家的输入是好意、中立还是恶意。好意评分：0到20（极度友好为20）；恶意评分：0到-35（极度挑衅为-35）；中立为0。仅返回评分数字，不解释。" },
+                            { role: "user", content: playerInput }
+                        ]
+                    })
+                });
+                if (!response.ok) throw new Error(`情感分析API错误: ${response.status}`);
+                const data = await response.json();
+                return parseInt(data.choices[0].message.content);
+            } catch (error) {
+                console.error("情感分析错误:", error);
+                return 0;
+            }
+        }
+
+        async function generateNPCResponse(npcName, playerInput, sentimentScore) {
+            if (!npcs[npcName]) return "这里没有这个人。";
+            const npc = npcs[npcName];
+            const history = gameState.conversationHistory[npcName] || [];
+            let rel = gameState.npcRelationships[npcName];
+            let goodwill = rel.goodwill;
+            let malice = rel.malice;
+
+            if (sentimentScore > 0) {
+                goodwill += Math.min(20, sentimentScore);
+                malice = Math.max(0, malice - Math.floor(sentimentScore / 2));
+            } else if (sentimentScore < 0) {
+                goodwill += sentimentScore;
+                malice += Math.min(35, Math.abs(sentimentScore));
+                if (malice >= 30 && malice < 60 && !rel.hasMisunderstanding) {
+                    rel.hasMisunderstanding = true;
+                    output(`<span class="system-message">卡尔似乎误解了你，输入“澄清误会”可缓解！</span>`);
+                }
+            }
+            rel.goodwill = Math.max(0, Math.min(100, goodwill));
+            rel.malice = Math.max(0, Math.min(100, malice));
+
+            if (rel.malice >= 100 && !rel.isHostile && npcName === "卡尔") {
+                rel.isHostile = true;
+                locations["再生月台"].objects["工具包"].taken = false;
+                output(`<span class="system-message">卡尔怒气冲冲丢下工具包离开！你可在再生月台拾取“卡尔的工具包”并归还修复关系。</span>`);
+                return `<span class="character-name">${npcName}</span>: 你他妈给我等着！（丢下工具转身离开）`;
+            }
+            if (rel.isHostile && npcName === "卡尔") return `<span class="system-message">卡尔已敌对，需归还工具包修复关系。</span>`;
+            if (malice >= 60 && Math.random() < 0.5 && npcName === "卡尔") {
+                return `<span class="character-name">${npcName}</span>: 你他妈有病吧？滚一边儿，别烦我干活儿！`;
+            }
+
+            try {
+                const systemPrompt = npc.systemPrompt
+                    .replace("[goodwill]", goodwill)
+                    .replace("[malice]", malice)
+                    .replace("[isHostile]", rel.isHostile);
+                const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        model: "deepseek-chat",
+                        messages: [
+                            { role: "system", content: systemPrompt },
+                            ...history.slice(-5),
+                            { role: "user", content: playerInput }
+                        ]
+                    })
+                });
+                if (!response.ok) throw new Error(`对话生成API错误: ${response.status}`);
+                const data = await response.json();
+                const npcResponse = data.choices[0].message.content;
+
+                gameState.conversationHistory[npcName] = [
+                    ...history,
+                    { role: "user", content: playerInput },
+                    { role: "assistant", content: npcResponse }
+                ].slice(-10);
+
+                output(`<span class="system-message">${npcName}态度：好感度 ${rel.goodwill}，恶意值 ${rel.malice}</span>`);
+                return `<span class="character-name">${npcName}</span>: ${npcResponse}`;
+            } catch (error) {
+                console.error("对话生成错误:", error);
+                return `<span class="system-message">对话系统出错: ${error.message}</span>`;
+            }
+        }
+
+        function updateSuggestions() {
+            suggestionsElement.innerHTML = "";
+            const suggestions = getMainlineSuggestions();
+            suggestions.forEach(cmd => {
+                const btn = document.createElement("button");
+                btn.className = "suggestion-btn";
+                btn.textContent = cmd;
+                btn.onclick = () => {
+                    inputElement.value = cmd;
+                    inputElement.focus();
+                };
+                suggestionsElement.appendChild(btn);
+            });
+        }
+
+        function getMainlineSuggestions() {
+            const suggestions = [];
+            if (!gameState.environmentChanges["再生月台"]) {
+                if (gameState.currentLocation === "灰鹰镇入口") {
+                    suggestions.push("检查 邮箱");
+                    suggestions.push("去 再生月台");
+                    suggestions.push("交谈 艾登");
+                } else if (gameState.currentLocation === "再生月台") {
+                    suggestions.push("交谈 卡尔");
+                    suggestions.push("检查 油罐");
+                    if (gameState.inventory.includes("解冻菌种")) suggestions.push("使用 解冻菌种 对 卡尔");
+                    if (!locations["再生月台"].objects["工具包"].taken) suggestions.push("拿 卡尔的工具包");
+                }
+            }
+            if (gameState.npcRelationships["卡尔"].isHostile) suggestions.push("使用 卡尔的工具包 对 卡尔");
+            if (gameState.npcRelationships["卡尔"].goodwill >= 60 && !gameState.sideQuests["调查父亲真相"]) suggestions.push("去 废弃仓库");
+            if (gameState.currentLocation === "废弃仓库" && !locations["废弃仓库"].objects["文件柜"].taken) suggestions.push("检查 文件柜");
+            return suggestions.length > 0 ? suggestions : ["任务"];
+        }
+
+        function getCurrentTasks() {
+            let tasks = `[智能手环界面]\n■ 主线进度 ${gameState.completedNodes === 0 ? "0%" : "33%"}\n`;
+            if (gameState.environmentChanges["再生月台"]) {
+                tasks += "✔ 激活再生月台\n→ 明日目标：声波净水站频率校准\n";
+            } else {
+                tasks += !gameState.inventory.includes("解冻菌种") ? "→ 获取解冻菌种（检查灰鹰镇入口的邮箱）\n" : "✔ 获取解冻菌种\n";
+                tasks += "→ 激活再生月台（前往再生月台，使用解冻菌种）\n";
+            }
+            if (gameState.npcRelationships["卡尔"].isHostile && !gameState.sideQuests["修复卡尔关系"]) {
+                tasks += "支线：修复卡尔关系（归还卡尔的工具包）\n";
+            }
+            if (gameState.npcRelationships["卡尔"].goodwill >= 60 && !gameState.sideQuests["调查父亲真相"]) {
+                tasks += "支线：调查父亲真相（前往废弃仓库，获取旧日志）\n";
+            }
+            if (gameState.sideQuests["调查父亲真相"]) tasks += "✔ 调查父亲真相\n";
+            return tasks;
+        }
+
+        const commandHandlers = {
+            "帮助": () => `可用命令：
+- 看/观察：查看当前环境
+- 去 [地点名]：移动到指定地点
+- 交谈/对话 [NPC名]：与NPC对话（可自由提问或“问父亲的事”“问管道情况”“问镇子历史”）
+- 检查 [对象]：检查物体
+- 敲击 [裂纹编号]：敲击邮箱冰晶（QTE）
+- 拿 [物品名]：拾取物品
+- 物品/背包：查看携带的物品
+- 使用 [物品名] 对 [NPC]：使用物品
+- 状态：显示当前状态
+- 任务：查看当前任务
+- 结束一天：推进一天时间
+- 保存：保存游戏
+- 加载：加载游戏`,
+            "状态": () => `当前状态：
+位置: ${gameState.currentLocation}
+时间: 第${gameState.day}天 ${gameState.time}
+修复节点: ${gameState.completedNodes}/1
+卡尔关系: 好感度 ${gameState.npcRelationships["卡尔"].goodwill}，恶意值 ${gameState.npcRelationships["卡尔"].malice}${gameState.npcRelationships["卡尔"].isHostile ? "（敌对）" : ""}
+艾登关系: 好感度 ${gameState.npcRelationships["艾登"].goodwill}
+物品: ${gameState.inventory.length > 0 ? gameState.inventory.join(", ") : "无"}`,
+            "看": (target) => !target ? locations[gameState.currentLocation].description + "\n\n可前往: " + locations[gameState.currentLocation].connections.join(", ") + "\n\n可检查: " + Object.keys(locations[gameState.currentLocation].objects).join(", ") : "没找到。",
+            "观察": (target) => commandHandlers["看"](target),
+            "去": (destination) => {
+                if (!destination) return "你想去哪里？可前往: " + locations[gameState.currentLocation].connections.join(", ");
+                if (locations[gameState.currentLocation].connections.includes(destination)) {
+                    gameState.currentLocation = destination;
+                    gameState.currentNPC = null;
+                    updateTime(15);
+                    updateUI();
+                    saveGame();
+                    return `你来到了${destination}。\n\n${locations[destination].description}`;
+                }
+                return `你不能去${destination}。`;
+            },
+            "交谈": async (npcName) => {
+                if (!npcName) return "你想和谁交谈？当前NPC: " + (locations[gameState.currentLocation].npcs.join(", ") || "无");
+                if (!locations[gameState.currentLocation].npcs.includes(npcName)) return `${npcName}不在这里。`;
+                gameState.currentNPC = npcName;
+                updateTime(10);
+                updateUI();
+                saveGame();
+                if (!gameState.conversationHistory[npcName]) {
+                    gameState.conversationHistory[npcName] = [];
+                    output(`<span class="system-message">（系统）可自由提问或输入特定对话选项（见“帮助”）！</span>`);
+                    return `<span class="character-name">${npcName}</span>: ${npcs[npcName].initialDialogue}\n\n[输入问题或“退出对话”]`;
+                }
+                return `再次与${npcName}交谈。\n<span class="character-name">${npcName}</span>: 你又回来了？有啥想问的？\n\n[输入问题或“退出对话”]`;
+            },
+            "对话": async (npcName) => commandHandlers["交谈"](npcName),
+            "检查": (objectName) => {
+                if (!objectName) return "你要检查什么？可检查: " + Object.keys(locations[gameState.currentLocation].objects).join(", ");
+                const obj = locations[gameState.currentLocation].objects[objectName];
+                if (!obj) return `这里没有${objectName}。`;
+                if (obj.condition === "卡尔敌对" && !gameState.npcRelationships["卡尔"].isHostile) return `${objectName}还未出现。`;
+                if (obj.condition === "好感度>=60" && gameState.npcRelationships["卡尔"].goodwill < 60) return `${objectName}锁着，无法打开。`;
+                updateTime(5);
+                if (obj.clue) return obj.description + "\n\n线索: " + obj.clue;
+                if (obj.qte && !obj.taken) {
+                    return obj.description + `\n\n你看到四道冰裂纹（编号1-4），输入“敲击 [编号]”尝试解锁！`;
+                }
+                if (obj.item && !obj.taken) return obj.description + `\n\n你发现了<span class="item-name">${obj.item}</span>，可以用“拿 ${obj.item}”拾取。`;
+                return obj.description + (obj.taken ? "\n\n这里已经空了。" : "");
+            },
+            "敲击": (crack) => {
+                if (gameState.currentLocation !== "灰鹰镇入口" || !locations["灰鹰镇入口"].objects["邮箱"].qte) return "这里没有需要敲击的东西。";
+                const obj = locations["灰鹰镇入口"].objects["邮箱"];
+                if (obj.taken) return "邮箱已经空了。";
+                updateTime(5);
+                gameState.qteAttempts["邮箱"]++;
+                if (crack === "4") {
+                    obj.qte = false;
+                    return `冰晶碎裂，你发现了<span class="item-name">解冻菌种</span>，输入“拿 解冻菌种”拾取！\n\n路牌积雪脱落，露出指向再生月台的箭头。`;
+                } else {
+                    if (gameState.qteAttempts["邮箱"] >= 3) return `卡尔路过：试试第四道裂纹，菜鸟。`;
+                    return `裂纹${crack}发出脆响，但没碎开。`;
+                }
+            },
+            "拿": (itemName) => {
+                if (!itemName) return "你要拿什么？";
+                const objects = locations[gameState.currentLocation].objects;
+                for (let objName in objects) {
+                    const obj = objects[objName];
+                    if (obj.item === itemName && !obj.taken) {
+                        if (obj.condition === "卡尔敌对" && !gameState.npcRelationships["卡尔"].isHostile) return `${itemName}还未出现。`;
+                        if (obj.condition === "好感度>=60" && gameState.npcRelationships["卡尔"].goodwill < 60) return `${itemName}锁在文件柜里。`;
+                        obj.taken = true;
+                        gameState.inventory.push(itemName);
+                        updateTime(5);
+                        saveGame();
+                        if (itemName === "旧日志") gameState.sideQuests["调查父亲真相"] = true;
+                        return `你拾取了<span class="item-name">${itemName}</span>。`;
+                    }
+                }
+                return `这里没有${itemName}可以拿。`;
+            },
+            "物品": () => gameState.inventory.length === 0 ? "背包为空。" : "你的物品:\n" + gameState.inventory.map(item => `- <span class="item-name">${item}</span>: ${items[item].description}`).join("\n"),
+            "背包": () => commandHandlers["物品"](),
+            "使用": (args) => {
+                const [itemName, , target] = args.split(" ");
+                if (!itemName || !target) return "格式：使用 [物品名] 对 [NPC]";
+                if (!gameState.inventory.includes(itemName)) return `你没有${itemName}。`;
+                if (npcs[target] && items[itemName].useWith && items[itemName].useWith.includes(target)) {
+                    updateTime(10);
+                    saveGame();
+                    return handleSpecialItem(itemName, target);
+                }
+                if (itemName === "草药" && target === "卡尔") {
+                    gameState.npcRelationships["卡尔"].goodwill += 20;
+                    updateTime(5);
+                    saveGame();
+                    return `<span class="character-name">卡尔</span>: 这玩意儿比我那破茶强，谢了。`;
+                }
+                return `${target}对${itemName}不感兴趣。`;
+            },
+            "结束一天": () => {
+                if (gameState.day < 1) {
+                    gameState.day++;
+                    gameState.time = "07:30";
+                    updateUI();
+                    saveGame();
+                    return `一天结束了。现在是第${gameState.day}天 ${gameState.time}。\n\n明日目标：声波净水站频率校准`;
+                } else {
+                    return gameOver(false);
+                }
+            },
+            "保存": () => saveGame(),
+            "加载": () => loadGame(),
+            "任务": () => getCurrentTasks()
+        };
+
+        function handleSpecialItem(itemName, npcName) {
+            if (itemName === "解冻菌种" && npcName === "卡尔") {
+                gameState.npcRelationships["卡尔"].goodwill += 20;
+                progressEnvironment("再生月台");
+                gameState.environmentChanges["灰鹰镇入口"] = true;
+                locations["灰鹰镇入口"].description = `[彩色路牌] 金属牌焕然一新，刻着"灰鹰镇"\n[结冰邮箱] 箱体结着蓝绿色冰晶，投递口有新鲜撬痕\n[三岔路口] 东侧铁轨泛着油光`;
+                return `菌种注入油罐，锈迹退去露出彩虹色金属。\n\n<span class="character-name">卡尔</span>: 这管子总算能喘口气了，干得不错。`;
+            }
+            if (itemName === "卡尔的工具包" && npcName === "卡尔") {
+                gameState.npcRelationships["卡尔"].goodwill = 30;
+                gameState.npcRelationships["卡尔"].malice = 0;
+                gameState.npcRelationships["卡尔"].isHostile = false;
+                gameState.sideQuests["修复卡尔关系"] = true;
+                gameState.inventory = gameState.inventory.filter(i => i !== "卡尔的工具包");
+                saveGame();
+                return `<span class="character-name">卡尔</span>: （接过工具包）行吧，算你有心。咱俩重新开始。`;
+            }
+            return `你对${npcName}使用了${itemName}，但没啥反应。`;
+        }
+
+        function progressEnvironment(location) {
+            if (!gameState.environmentChanges[location]) {
+                gameState.environmentChanges[location] = true;
+                gameState.completedNodes++;
+                gameState.roadStripes++;
+                output(`<span class="system-message">环境变化: ${location}的生态节点已激活！\n\n路牌增加一道彩色条纹（${gameState.roadStripes}/3）。</span>`);
+                saveGame();
+            }
+        }
+
+        function gameOver(win) {
+            return win ? `<span class="system-message">恭喜！你激活了再生月台！\n\n明日目标：声波净水站</span>` :
+                        `<span class="system-message">时间耗尽，第一幕失败。</span>`;
+        }
+
+        async function handleCommand(input) {
+            const parts = input.trim().split(" ");
+            const command = parts[0].toLowerCase();
+            const args = parts.slice(1).join(" ");
+
+            output(`> ${input}`);
+
+            if (gameState.currentNPC && command !== "退出对话") {
+                const npc = npcs[gameState.currentNPC];
+                if (command === "退出对话") {
+                    gameState.currentNPC = null;
+                    output("你结束了对话。");
+                    updateUI();
+                    saveGame();
+                    return;
+                }
+                if (npc.dialogueTree[args]) {
+                    const tree = npc.dialogueTree[args];
+                    const rel = gameState.npcRelationships[gameState.currentNPC];
+                    if (tree.condition && !eval(tree.condition.replace("好感度", rel.goodwill).replace("hasMisunderstanding", rel.hasMisunderstanding))) {
+                        output(`<span class="character-name">${gameState.currentNPC}</span>: （皱眉）咱俩还没熟到聊这个吧？`);
+                        return;
+                    }
+                    let response = `<span class="character-name">${gameState.currentNPC}</span>: ${tree.response}`;
+                    if (tree.options) {
+                        response += "\n\n选项: " + Object.keys(tree.options).join(" / ");
+                    }
+                    output(response);
+                    if (tree.effect) {
+                        eval(tree.effect.replace("恶意值", "rel.malice").replace("hasMisunderstanding", "rel.hasMisunderstanding"));
+                        if (args === "调查父亲真相") gameState.sideQuests["调查父亲真相"] = false; // 标记未完成
+                    }
+                    if (args === "问父亲的事" && input.toLowerCase().includes("继续追问")) {
+                        rel.goodwill += 15;
+                        output(`<span class="system-message">卡尔对你更信任了：好感度 ${rel.goodwill}</span>\n\n日志片段：1994化学泄漏记录`);
+                    } else if (args === "问管道情况" && input.toLowerCase().includes("继续问")) {
+                        rel.goodwill += 10;
+                    } else if (args === "问镇子历史" && input.toLowerCase().includes("表示同情")) {
+                        rel.goodwill += 15;
+                    } else if (args === "问任务进展" && input.toLowerCase().includes("表示感谢")) {
+                        rel.goodwill += 10;
+                    }
+                    saveGame();
+                    return;
+                }
+                const sentimentScore = await analyzeSentiment(input);
+                const response = await generateNPCResponse(gameState.currentNPC, input, sentimentScore);
+                output(response);
+                saveGame();
+                return;
+            }
+
+            const handler = commandHandlers[command];
+            if (handler) {
+                const result = await handler(args);
+                output(result);
+                updateSuggestions();
+            } else {
+                output(`<span class="system-message">未知指令: ${input}</span>`);
+            }
+        }
+
+        inputElement.addEventListener("keydown", async (event) => {
+            if (event.key === "Enter") {
+                const input = inputElement.value.trim();
+                if (input) {
+                    await handleCommand(input);
+                    inputElement.value = "";
+                }
+            }
+        });
+
+        helpButton.addEventListener("click", () => {
+            output(commandHandlers["帮助"]());
+            updateSuggestions();
+        });
+
+        exitButton.addEventListener("click", () => {
+            if (gameState.currentNPC) {
+                gameState.currentNPC = null;
+                output("你结束了对话。");
+                updateUI();
+                saveGame();
+            }
+        });
+
+        output(`<span class="system-message">欢迎来到灰鹰镇！第一幕：锈轨复苏计划\n\n输入“交谈 艾登”获取指引，或“检查 邮箱”探索！</span>`);
+        updateUI();
+    </script>
+</body>
+</html>
